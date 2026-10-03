@@ -1,5 +1,236 @@
 /* App-specific prototype styles. The mobile runtime stays untouched. */
 
+.camera-feed.live-camera {
+  object-fit: contain;
+  background: #171717;
+}
+.live-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 2;
+}
+.camera-start {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 18px;
+  padding: 12px 18px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--scan-blue);
+  color: white;
+  font-weight: 700;
+}
+.sample-start {
+  display: block;
+  margin: 12px auto 0;
+  border: 0;
+  background: transparent;
+  color: #fff;
+  font-size: 12px;
+  text-decoration: underline;
+}
+.document-preview.actual-preview {
+  height: 330px;
+  background: #e9e8e4;
+  box-shadow: none;
+}
+.document-preview.actual-preview img {
+  object-fit: contain;
+  width: 100%;
+  height: 100%;
+}
+.page-tools {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+.page-tools button {
+  border: 1px solid #dce2e9;
+  border-radius: 10px;
+  background: #fff;
+  color: #2a3948;
+  padding: 8px 12px;
+  font-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.page-tools button[aria-pressed="true"] {
+  background: #e8f2ff;
+  color: #1268d5;
+}
+.filter-rail {
+  display: flex;
+  gap: 12px;
+  padding: 3px;
+}
+.filter-rail > button {
+  flex: 0 0 68px;
+}
+.filter-rail .filter-swatch {
+  width: 64px;
+}
+.library-search {
+  margin: 0 20px 16px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #e9edf2;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.library-search input {
+  border: 0;
+  background: transparent;
+  width: 100%;
+  min-width: 0;
+  font-size: 14px;
+  outline: 0;
+}
+.document-row {
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid #e3e8ef;
+  padding: 14px 0;
+  gap: 10px;
+}
+.document-open {
+  display: flex;
+  flex: 1;
+  gap: 12px;
+  min-width: 0;
+  text-align: left;
+  background: transparent;
+  border: 0;
+}
+.document-open img {
+  width: 50px;
+  height: 68px;
+  object-fit: contain;
+  background: #eee;
+  border-radius: 6px;
+}
+.document-open span {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.document-open strong {
+  overflow-wrap: anywhere;
+  font-size: 15px;
+}
+.document-open small {
+  color: #728091;
+  font-size: 11px;
+}
+.empty-documents {
+  padding: 50px 12px;
+  text-align: center;
+  color: #728091;
+  line-height: 1.8;
+}
+.global-notice,
+.camera-notice {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: calc(var(--mobile-safe-area-height) + 12px);
+  z-index: 30;
+  padding: 12px 40px 12px 14px;
+  border-radius: 14px;
+  background: #17202b;
+  color: #fff;
+  font-size: 12px;
+  line-height: 1.6;
+  box-shadow: 0 4px 20px #0003;
+}
+.camera-notice {
+  bottom: 250px;
+}
+.global-notice button,
+.camera-notice button {
+  position: absolute;
+  right: 8px;
+  top: 8px;
+  background: transparent;
+  color: white;
+  border: 0;
+}
+.processing-overlay.app-busy {
+  z-index: 100;
+}
+.full-width {
+  width: 100%;
+  margin-top: 12px;
+  min-height: 44px;
+  border-radius: 12px;
+}
+.editor-label {
+  display: grid;
+  gap: 8px;
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+.editor-label input {
+  padding: 12px;
+  border: 1px solid #ccd6e2;
+  border-radius: 10px;
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 14px;
+}
+.ocr-result {
+  max-height: 250px;
+  overflow: auto;
+  user-select: text;
+}
+.sheet-primary.danger-action {
+  background: #b82d38;
+}
+.crop-image {
+  position: relative;
+  height: 130px;
+}
+.crop-preview {
+  height: 130px;
+  width: 100%;
+  object-fit: contain;
+}
+.crop-outline {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.crop-controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.crop-controls fieldset {
+  border: 1px solid #dce2e9;
+  border-radius: 8px;
+  min-width: 0;
+  font-size: 11px;
+  padding: 8px;
+}
+.crop-controls label {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.crop-controls input {
+  width: 100%;
+  min-width: 0;
+}
+
 :root {
   --scan-blue: #2581f6;
   --scan-blue-dark: #1268d5;

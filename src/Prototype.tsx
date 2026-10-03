@@ -1,9 +1,8 @@
-import { useEffect, useReducer, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ArrowLeftIcon,
   CameraIcon,
   CheckCircledIcon,
-  ChevronRightIcon,
   Cross2Icon,
   DownloadIcon,
   FileTextIcon,
@@ -13,449 +12,1119 @@ import {
   MagicWandIcon,
   PlusIcon,
   ReaderIcon,
+  TrashIcon,
+  ReloadIcon as RotateClockwiseIcon,
+  MagnifyingGlassIcon,
 } from "@radix-ui/react-icons";
-import { BottomSheet, Carousel, MobileScroll } from "./mobile";
+import {
+  BottomSheet,
+  Carousel,
+  KeyboardInput,
+  MobileScroll,
+  useKeyboard,
+} from "./mobile";
+import {
+  detectDocument,
+  importImage,
+  loadImage,
+  processImage,
+  rotateImage,
+  splitBook,
+  type Quad,
+  type ImageFilter,
+} from "./scanner/vision";
+import { recognizeText } from "./scanner/ocr";
+import { downloadBlob, downloadText } from "./scanner/download";
+import {
+  listDocuments,
+  saveDocument,
+  deleteDocument,
+  newDocument,
+  type ScanPage,
+  type ScanDocument,
+} from "./scanner/storage";
 
-type CaptureMode = "자동" | "책" | "문서";
-type Screen = "camera" | "processing" | "review";
-type Filter = "자동" | "원본" | "문서" | "흑백";
-type Sheet = "gallery" | "export" | "ocr" | "settings" | null;
-const CAPTURE_MODES: CaptureMode[] = ["자동", "책", "문서"];
-const FILTERS: Filter[] = ["자동", "원본", "문서", "흑백"];
-const MAX_PAGES = 20;
-const CAMERA_ASSET = "/assets/app/book-camera-preview.png";
-type ScanState = { screen: Screen; pageCount: number; activePage: number };
-type ScanAction =
-  | { type: "capture" }
-  | { type: "processed"; pages: number }
-  | { type: "camera" }
-  | { type: "select"; page: number }
-  | { type: "reset" };
-const initialScan: ScanState = {
-  screen: "camera",
-  pageCount: 0,
-  activePage: 0,
-};
-function scanReducer(state: ScanState, action: ScanAction): ScanState {
-  switch (action.type) {
-    case "capture":
-      return state.screen === "camera" && state.pageCount < MAX_PAGES
-        ? { ...state, screen: "processing" }
-        : state;
-    case "processed":
-      return state.screen === "processing"
-        ? {
-            ...state,
-            screen: "review",
-            pageCount: Math.min(MAX_PAGES, state.pageCount + action.pages),
-            activePage: state.pageCount,
-          }
-        : state;
-    case "camera":
-      return { ...state, screen: "camera" };
-    case "select":
-      return action.page >= 0 && action.page < state.pageCount
-        ? { ...state, activePage: action.page }
-        : state;
-    case "reset":
-      return initialScan;
-  }
-}
-
-function FilterPicker({
-  value,
-  onChange,
-}: {
-  value: Filter;
-  onChange: (filter: Filter) => void;
-}) {
-  return (
-    <div className="filter-list">
-      {FILTERS.map((item) => (
-        <button
-          key={item}
-          aria-pressed={value === item}
-          className={value === item ? "filter-chip selected" : "filter-chip"}
-          onClick={() => onChange(item)}
-        >
-          <span className={`filter-swatch swatch-${item}`}>
-            <MagicWandIcon />
-          </span>
-          {item}
-        </button>
-      ))}
-    </div>
+const SAMPLE = "/assets/app/book-camera-preview.png";
+const MODES = ["자동", "책", "문서"] as const;
+const FILTERS: { id: ImageFilter; label: string }[] = [
+  { id: "auto", label: "자동" },
+  { id: "original", label: "원본" },
+  { id: "document", label: "문서" },
+  { id: "bw", label: "흑백" },
+  { id: "gray", label: "회색" },
+  { id: "photo", label: "사진" },
+];
+type Sheet = "ocr" | "export" | "settings" | "crop" | "save" | "delete" | null;
+type View = "camera" | "review" | "library";
+async function preparePages(source: string, book: boolean) {
+  const detected = await detectDocument(source);
+  const corrected = await processImage(
+    source,
+    detected ?? undefined,
+    "original",
   );
+  const originals = book ? await splitBook(corrected) : [corrected];
+  const pages: ScanPage[] = [];
+  // Preserve the unfiltered corrected image: changing filters must not compound edits.
+  for (const original of originals)
+    pages.push({
+      id: crypto.randomUUID(),
+      image: await processImage(original, undefined, "auto"),
+      original,
+      filter: "auto",
+    });
+  return { pages, detected };
 }
-
-const OCR_TEXT = `작은 순간이 큰 변화를 만든다.\n\n좋은 하루는 아주 작은 마음에서 시작된다. 거창한 계획이 아니어도 괜찮다. 오늘을 조금 더 단정하게 살아보려는 마음, 그 하나로 충분하다.`;
+const errorMessage = (error: unknown) => {
+  if (error instanceof DOMException && error.name === "NotAllowedError")
+    return "카메라 권한이 거부됐어요. 브라우저에서 허용하거나 사진 가져오기를 이용하세요.";
+  if (error instanceof DOMException && error.name === "NotFoundError")
+    return "사용 가능한 카메라가 없어요. 사진 가져오기를 이용하세요.";
+  return error instanceof Error ? error.message : "처리 중 오류가 발생했어요.";
+};
 
 export default function Prototype() {
-  const [mode, setMode] = useState<CaptureMode>("책");
-  const [{ screen, pageCount, activePage }, dispatch] = useReducer(
-    scanReducer,
-    initialScan,
-  );
-  const [flash, setFlash] = useState(false);
-  const [filter, setFilter] = useState<Filter>("자동");
+  const [view, setView] = useState<View>("camera");
+  const [mode, setMode] = useState<(typeof MODES)[number]>("문서");
+  const [pages, setPages] = useState<ScanPage[]>([]);
+  const [active, setActive] = useState(0);
   const [sheet, setSheet] = useState<Sheet>(null);
+  const [busy, setBusy] = useState("");
+  const [progress, setProgress] = useState(0);
   const [notice, setNotice] = useState("");
-  const [autoCapture, setAutoCapture] = useState(false);
-  const closeSheet = (open: boolean) => {
-    if (!open) setSheet(null);
-  };
-
-  useEffect(() => {
-    if (screen !== "processing") return;
-    const timer = window.setTimeout(
-      () => dispatch({ type: "processed", pages: mode === "책" ? 2 : 1 }),
-      1100,
-    );
-    return () => window.clearTimeout(timer);
-  }, [screen, mode]);
-
-  const startCapture = () => {
+  const [live, setLive] = useState(false);
+  const [auto, setAuto] = useState(false);
+  const [flash, setFlash] = useState(false);
+  const [quad, setQuad] = useState<Quad | null>(null);
+  const [cropQuad, setCropQuad] = useState<Quad | null>(null);
+  const [cropSize, setCropSize] = useState({ width: 1, height: 1 });
+  const [documents, setDocuments] = useState<ScanDocument[]>([]);
+  const [query, setQuery] = useState("");
+  const [title, setTitle] = useState("");
+  const [tags, setTags] = useState("");
+  const [documentId, setDocumentId] = useState<string | null>(null);
+  const [createdAt, setCreatedAt] = useState(0);
+  const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [quality, setQuality] = useState<"high" | "compact">("high");
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const overlayRef = useRef<HTMLCanvasElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const busyRef = useRef(false);
+  const mountedRef = useRef(true);
+  const keyboard = useKeyboard();
+  const selected = pages[active];
+  const navigate = (next: View) => {
+    keyboard.hide();
+    setSheet(null);
     setNotice("");
-    dispatch({ type: "capture" });
+    setView(next);
   };
-  const copySample = async () => {
+  const openSheet = (next: Sheet) => {
+    keyboard.hide();
+    setNotice("");
+    setSheet(next);
+  };
+  const closeSheet = (open: boolean) => {
+    if (!open && !busyRef.current) setSheet(null);
+  };
+  const stopCamera = () => {
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    setLive(false);
+    setQuad(null);
+    setFlash(false);
+  };
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+    };
+  }, []);
+  useEffect(() => {
+    if (view !== "camera") stopCamera();
+  }, [view]);
+  useEffect(() => {
+    if (!live || !videoRef.current) return;
+    videoRef.current.srcObject = streamRef.current;
+    videoRef.current
+      .play()
+      .catch(() => setNotice("카메라 재생을 시작할 수 없어요."));
+  }, [live, view]);
+  useEffect(() => {
+    if (view !== "library") return;
+    let cancelled = false;
+    listDocuments(query)
+      .then((result) => {
+        if (!cancelled) setDocuments(result);
+      })
+      .catch((error) => {
+        if (!cancelled) setNotice(errorMessage(error));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [view, query]);
+
+  const run = async (label: string, job: () => Promise<void>) => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy(label);
+    setNotice("");
+    setProgress(0);
     try {
-      await navigator.clipboard.writeText(OCR_TEXT);
-      setNotice("샘플 텍스트를 복사했어요");
-      setSheet(null);
-    } catch {
-      setNotice("복사 권한이 없어요. 텍스트를 직접 선택해 복사하세요.");
+      await job();
+    } catch (error) {
+      if (mountedRef.current) setNotice(errorMessage(error));
+    } finally {
+      busyRef.current = false;
+      if (mountedRef.current) {
+        setBusy("");
+        setProgress(0);
+      }
     }
   };
+  const startCamera = async () => {
+    await run("카메라 연결 중", async () => {
+      if (!navigator.mediaDevices?.getUserMedia)
+        throw new Error(
+          "카메라는 HTTPS 또는 localhost에서 사용할 수 있어요. 사진 가져오기를 이용하세요.",
+        );
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: "environment" },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+        },
+        audio: false,
+      });
+      if (!mountedRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      streamRef.current = stream;
+      setLive(true);
+    });
+  };
+  const captureFrame = () => {
+    const video = videoRef.current;
+    if (!video?.videoWidth)
+      throw new Error("카메라가 준비될 때까지 기다려 주세요.");
+    const scale = Math.min(
+      1,
+      2200 / Math.max(video.videoWidth, video.videoHeight),
+    );
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(video.videoWidth * scale);
+    canvas.height = Math.round(video.videoHeight * scale);
+    canvas
+      .getContext("2d")!
+      .drawImage(video, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/jpeg", 0.9);
+  };
+  const appendImage = async (source: string) => {
+    if (pages.length >= 20)
+      throw new Error("문서당 최대 20페이지까지 저장할 수 있어요.");
+    const { pages: added, detected } = await preparePages(
+      source,
+      mode === "책",
+    );
+    if (pages.length + added.length > 20)
+      throw new Error("책 스캔에는 2페이지의 여유가 필요해요.");
+    setPages((previous) => [...previous, ...added]);
+    setActive(pages.length);
+    navigate("review");
+    if (!detected)
+      setNotice(
+        "경계를 확실히 찾지 못해 전체 이미지를 사용했어요. 자르기로 조정할 수 있어요.",
+      );
+  };
+  const capture = () =>
+    run("문서 보정 중", async () => {
+      if (!live) throw new Error("카메라를 켜거나 사진을 가져와 주세요.");
+      await appendImage(captureFrame());
+    });
+  const captureRef = useRef(capture);
+  captureRef.current = capture;
+  useEffect(() => {
+    if (!live || view !== "camera") return;
+    let cancelled = false,
+      detecting = false,
+      stable = 0,
+      previous: Quad | null = null;
+    const timer = window.setInterval(async () => {
+      if (detecting || busyRef.current || !videoRef.current?.videoWidth) return;
+      detecting = true;
+      try {
+        const source = captureFrame();
+        const found = await detectDocument(source);
+        if (cancelled) return;
+        setQuad(found);
+        const image = await loadImage(source);
+        const canvas = overlayRef.current;
+        if (canvas) {
+          canvas.width = canvas.clientWidth;
+          canvas.height = canvas.clientHeight;
+          const ctx = canvas.getContext("2d")!;
+          const scale = Math.min(
+            canvas.width / image.width,
+            canvas.height / image.height,
+          );
+          const ox = (canvas.width - image.width * scale) / 2,
+            oy = (canvas.height - image.height * scale) / 2;
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          if (found) {
+            ctx.strokeStyle = "#2581f6";
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            found.forEach((p, i) =>
+              i === 0
+                ? ctx.moveTo(ox + p.x * scale, oy + p.y * scale)
+                : ctx.lineTo(ox + p.x * scale, oy + p.y * scale),
+            );
+            ctx.closePath();
+            ctx.stroke();
+          }
+        }
+        const movement =
+          found && previous
+            ? Math.max(
+                ...found.map((p, i) =>
+                  Math.hypot(p.x - previous![i].x, p.y - previous![i].y),
+                ),
+              ) / Math.max(image.width, image.height)
+            : 1;
+        stable = found && movement < 0.015 ? stable + 1 : 0;
+        previous = found;
+        if (auto && stable >= 3) {
+          stable = 0;
+          void captureRef.current();
+        }
+      } catch {
+        if (!cancelled) setQuad(null);
+      } finally {
+        detecting = false;
+      }
+    }, 900);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [live, view, auto]);
 
-  if (screen === "review") {
-    return (
-      <>
+  const importFiles = (files: FileList | null) => {
+    if (!files?.length) return;
+    const chosen = Array.from(files);
+    void run("사진 가져오는 중", async () => {
+      const count = chosen.length * (mode === "책" ? 2 : 1);
+      if (pages.length + count > 20)
+        throw new Error("문서당 20페이지를 초과했어요.");
+      // Decode the entire batch before committing to avoid partial imports.
+      const added: ScanPage[] = [];
+      for (const file of chosen) {
+        const source = await importImage(file);
+        added.push(...(await preparePages(source, mode === "책")).pages);
+      }
+      setPages((previous) => [...previous, ...added]);
+      setActive(pages.length);
+      navigate("review");
+    });
+  };
+  const updatePage = (page: ScanPage) =>
+    setPages((previous) =>
+      previous.map((item) => (item.id === page.id ? page : item)),
+    );
+  const applyFilter = (filter: ImageFilter) =>
+    selected &&
+    run("필터 적용 중", async () => {
+      updatePage({
+        ...selected,
+        image: await processImage(selected.original, undefined, filter),
+        filter,
+        ocr: undefined,
+      });
+    });
+  const recognizePages = async () => {
+    const recognized: ScanPage[] = [];
+    for (let i = 0; i < pages.length; i++) {
+      const page = pages[i];
+      const ocr =
+        page.ocr ??
+        (await recognizeText(page.image, (value) =>
+          setProgress(Math.round(((i + value) / pages.length) * 100)),
+        ));
+      recognized.push({ ...page, ocr });
+    }
+    setPages(recognized);
+    return recognized;
+  };
+  const extractText = () =>
+    run("한국어 · 영어 OCR 실행 중", async () => {
+      await recognizePages();
+      openSheet("ocr");
+    });
+  const exportPdf = (searchable: boolean) =>
+    run(searchable ? "OCR 및 PDF 생성 중" : "PDF 생성 중", async () => {
+      const ready = searchable ? await recognizePages() : pages;
+      const { createScanPdf } = await import("./scanner/pdf");
+      const blob = await createScanPdf(ready, { searchable, quality });
+      downloadBlob(blob, title.trim() || "Quiet Scan");
+      setNotice("PDF 파일을 생성했어요. 다운로드 목록을 확인하세요.");
+      setSheet(null);
+    });
+  const save = () =>
+    run("기기에 저장 중", async () => {
+      const doc: ScanDocument = {
+        ...newDocument(pages, title),
+        ...(documentId ? { id: documentId, createdAt } : {}),
+        title: title.trim() || "제목 없는 문서",
+        tags: tags
+          .split(",")
+          .map((tag) => tag.trim())
+          .filter(Boolean),
+      };
+      await saveDocument(doc);
+      setDocumentId(doc.id);
+      setCreatedAt(doc.createdAt);
+      setNotice("이 브라우저에 문서를 저장했어요.");
+      setSheet(null);
+    });
+  const openCrop = () =>
+    selected &&
+    run("자르기 준비 중", async () => {
+      const image = await loadImage(selected.original);
+      setCropSize({ width: image.width, height: image.height });
+      setCropQuad(
+        (await detectDocument(selected.original)) ?? [
+          { x: 0, y: 0 },
+          { x: image.width - 1, y: 0 },
+          { x: image.width - 1, y: image.height - 1 },
+          { x: 0, y: image.height - 1 },
+        ],
+      );
+      openSheet("crop");
+    });
+  const text = pages
+    .map((page, i) => `[페이지 ${i + 1}]\n${page.ocr?.text ?? ""}`)
+    .join("\n\n");
+  const reset = () => {
+    stopCamera();
+    setPages([]);
+    setActive(0);
+    setDocumentId(null);
+    setTitle("");
+    setTags("");
+    navigate("camera");
+  };
+
+  return (
+    <>
+      <input
+        ref={fileRef}
+        data-testid="image-import"
+        type="file"
+        accept="image/jpeg,image/png,image/webp"
+        multiple
+        hidden
+        onChange={(event) => {
+          importFiles(event.target.files);
+          event.target.value = "";
+        }}
+      />
+      {view === "camera" ? (
+        <main
+          className="app-screen camera-screen"
+          aria-label="문서 스캔 카메라"
+        >
+          {live ? (
+            <video
+              ref={videoRef}
+              className="camera-feed live-camera"
+              muted
+              playsInline
+            />
+          ) : (
+            <img
+              className="camera-feed"
+              src={SAMPLE}
+              alt="카메라 연결 전 샘플 배경"
+              draggable="false"
+            />
+          )}
+          <div className="camera-shade" />
+          <canvas
+            ref={overlayRef}
+            className="live-overlay"
+            aria-hidden="true"
+          />
+          <header className="camera-toolbar">
+            <button
+              className="icon-button"
+              aria-label="내 문서"
+              onClick={() => navigate("library")}
+            >
+              <FileTextIcon />
+            </button>
+            <div className="toolbar-actions">
+              <button
+                className={flash ? "icon-button active" : "icon-button"}
+                aria-label="플래시"
+                aria-pressed={flash}
+                disabled={!live}
+                onClick={() =>
+                  void run("플래시 설정 중", async () => {
+                    const track = streamRef.current?.getVideoTracks()[0];
+                    if (!track) return;
+                    if (
+                      !(
+                        track.getCapabilities() as MediaTrackCapabilities & {
+                          torch?: boolean;
+                        }
+                      ).torch
+                    )
+                      throw new Error("이 카메라는 플래시를 지원하지 않아요.");
+                    await track.applyConstraints({
+                      advanced: [{ torch: !flash } as MediaTrackConstraintSet],
+                    });
+                    setFlash(!flash);
+                  })
+                }
+              >
+                <LightningBoltIcon />
+              </button>
+              <button
+                className="icon-button"
+                aria-label="설정"
+                onClick={() => openSheet("settings")}
+              >
+                <GearIcon />
+              </button>
+            </div>
+          </header>
+          <section className="capture-message">
+            <h1>문서를 스캔하세요</h1>
+            <p>
+              {live
+                ? quad
+                  ? "문서 경계를 찾았어요"
+                  : "문서를 화면 가운데 놓으세요"
+                : "카메라를 켜거나 사진을 가져오세요"}
+            </p>
+            {!live && (
+              <>
+                <button
+                  className="camera-start"
+                  onClick={() => void startCamera()}
+                >
+                  <CameraIcon /> 카메라 켜기
+                </button>
+                <button
+                  className="sample-start"
+                  onClick={() =>
+                    void run("샘플 보정 중", () => appendImage(SAMPLE))
+                  }
+                >
+                  샘플로 체험하기
+                </button>
+              </>
+            )}
+          </section>
+          <section className="capture-controls">
+            <div className="mode-switch" aria-label="스캔 모드">
+              {MODES.map((item) => (
+                <button
+                  key={item}
+                  className={mode === item ? "selected" : ""}
+                  aria-pressed={mode === item}
+                  disabled={!!busy}
+                  onClick={() => setMode(item)}
+                >
+                  {item}
+                </button>
+              ))}
+            </div>
+            <div className="shutter-row">
+              <button
+                className="side-control"
+                disabled={!!busy}
+                onClick={() => fileRef.current?.click()}
+              >
+                <span>
+                  <ImageIcon />
+                </span>
+                가져오기
+              </button>
+              <button
+                className="shutter"
+                aria-label="촬영"
+                disabled={!live || !!busy || pages.length >= 20}
+                onClick={() => void capture()}
+              >
+                <span />
+              </button>
+              <button
+                className="side-control"
+                aria-pressed={auto}
+                disabled={!live}
+                onClick={() => setAuto(!auto)}
+              >
+                <span>
+                  <CameraIcon />
+                </span>
+                {auto ? "자동 촬영 켜짐" : "자동 촬영"}
+              </button>
+            </div>
+            {pages.length > 0 && (
+              <button
+                className="sample-start"
+                onClick={() => navigate("review")}
+              >
+                {pages.length}페이지 미리보기
+              </button>
+            )}
+          </section>
+        </main>
+      ) : view === "library" ? (
+        <div className="review-shell">
+          <header className="review-header">
+            <button
+              className="icon-button light"
+              aria-label="카메라로 돌아가기"
+              onClick={() => navigate("camera")}
+            >
+              <ArrowLeftIcon />
+            </button>
+            <h1>내 문서</h1>
+            <button className="text-button" onClick={reset}>
+              <PlusIcon /> 새 스캔
+            </button>
+          </header>
+          <div className="library-search">
+            <MagnifyingGlassIcon />
+            <KeyboardInput
+              aria-label="문서 검색"
+              placeholder="제목 · 본문 · 태그 검색"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+          </div>
+          <MobileScroll className="review-screen">
+            <main className="review-content">
+              <p className="privacy-note">
+                이 브라우저에만 저장됩니다 · {documents.length}개
+              </p>
+              {documents.length === 0 && (
+                <p className="empty-documents">
+                  저장된 문서가 없어요.
+                  <br />
+                  스캔 후 ‘문서 저장’을 눌러 주세요.
+                </p>
+              )}
+              {documents.map((doc) => (
+                <article className="document-row" key={doc.id}>
+                  <button
+                    className="document-open"
+                    onClick={() => {
+                      setPages(doc.pages);
+                      setActive(0);
+                      setTitle(doc.title);
+                      setTags(doc.tags.join(", "));
+                      setDocumentId(doc.id);
+                      setCreatedAt(doc.createdAt);
+                      navigate("review");
+                    }}
+                  >
+                    <img src={doc.pages[0].image} alt="" />
+                    <span>
+                      <strong>{doc.title}</strong>
+                      <small>
+                        {doc.pages.length}페이지 ·{" "}
+                        {new Date(doc.updatedAt).toLocaleDateString("ko-KR")}
+                      </small>
+                      <small>{doc.tags.join(" · ")}</small>
+                    </span>
+                  </button>
+                  <button
+                    className="icon-button light"
+                    aria-label={`${doc.title} 삭제`}
+                    onClick={() => {
+                      setDeleteId(doc.id);
+                      openSheet("delete");
+                    }}
+                  >
+                    <TrashIcon />
+                  </button>
+                </article>
+              ))}
+            </main>
+          </MobileScroll>
+        </div>
+      ) : (
         <div className="review-shell">
           <header className="review-header">
             <button
               className="icon-button light"
               aria-label="촬영 화면으로 돌아가기"
-              onClick={() => dispatch({ type: "camera" })}
+              onClick={() => navigate("camera")}
             >
               <ArrowLeftIcon />
             </button>
             <div>
-              <span className="eyebrow">{pageCount}페이지</span>
+              <span className="eyebrow">{pages.length}페이지</span>
               <h1>스캔 미리보기</h1>
             </div>
-            <button className="text-button" onClick={() => setSheet("export")}>
-              완료
+            <button className="text-button" onClick={() => openSheet("save")}>
+              문서 저장
             </button>
           </header>
-          <MobileScroll className="app-screen review-screen">
-            <main className="review-content" aria-label="스캔 미리보기">
-              <section
-                className={`document-preview filter-${filter}`}
-                aria-label="보정된 문서"
-              >
-                <img
-                  src={CAMERA_ASSET}
-                  alt={`${activePage + 1}페이지 샘플 스캔`}
-                  draggable="false"
-                />
-                <div className="page-divider" aria-hidden="true" />
-                <div className="quality-badge">
-                  <CheckCircledIcon /> 샘플 미리보기 · {activePage + 1}페이지
-                </div>
-              </section>
-
-              <section className="filter-section" aria-label="이미지 필터">
-                <div className="section-heading">
-                  <div>
-                    <span className="eyebrow">이미지 보정</span>
-                    <h2>필터 선택</h2>
+          <MobileScroll className="review-screen">
+            <main className="review-content">
+              {selected && (
+                <>
+                  <section className="document-preview actual-preview">
+                    <img
+                      src={selected.image}
+                      alt={`${active + 1}페이지 스캔`}
+                      draggable="false"
+                    />
+                    <div className="quality-badge">
+                      <CheckCircledIcon /> {active + 1}페이지
+                    </div>
+                  </section>
+                  <div className="page-tools">
+                    <button onClick={() => void openCrop()} disabled={!!busy}>
+                      자르기
+                    </button>
+                    <button
+                      aria-label="페이지 회전"
+                      disabled={!!busy}
+                      onClick={() =>
+                        void run("회전 중", async () => {
+                          const original = await rotateImage(selected.original);
+                          updatePage({
+                            ...selected,
+                            original,
+                            image: await processImage(
+                              original,
+                              undefined,
+                              selected.filter,
+                            ),
+                            ocr: undefined,
+                          });
+                        })
+                      }
+                    >
+                      <RotateClockwiseIcon /> 회전
+                    </button>
+                    <button
+                      aria-label="페이지 삭제"
+                      disabled={!!busy}
+                      onClick={() => {
+                        setPages(pages.filter((p) => p.id !== selected.id));
+                        setActive(Math.max(0, active - 1));
+                        if (pages.length === 1) navigate("camera");
+                      }}
+                    >
+                      <TrashIcon /> 삭제
+                    </button>
                   </div>
-                  <span className="privacy-note">이미지 필터 데모</span>
-                </div>
-                <FilterPicker value={filter} onChange={setFilter} />
-              </section>
-
+                  <section className="filter-section">
+                    <div className="section-heading">
+                      <h2>필터 선택</h2>
+                      <span className="privacy-note">기기에서 처리</span>
+                    </div>
+                    <Carousel ariaLabel="필터" contentClassName="filter-rail">
+                      {FILTERS.map((item) => (
+                        <button
+                          key={item.id}
+                          className={
+                            selected.filter === item.id
+                              ? "filter-chip selected"
+                              : "filter-chip"
+                          }
+                          aria-pressed={selected.filter === item.id}
+                          disabled={!!busy}
+                          onClick={() => void applyFilter(item.id)}
+                        >
+                          <span className="filter-swatch">
+                            <MagicWandIcon />
+                          </span>
+                          {item.label}
+                        </button>
+                      ))}
+                    </Carousel>
+                  </section>
+                </>
+              )}
               <section className="pages-section">
-                <div className="section-heading compact">
+                <div className="section-heading">
                   <h2>페이지</h2>
                   <button
                     className="add-page"
-                    disabled={pageCount >= MAX_PAGES}
-                    onClick={() => dispatch({ type: "camera" })}
+                    disabled={pages.length >= 20}
+                    onClick={() => navigate("camera")}
                   >
                     <PlusIcon /> 추가 촬영
                   </button>
                 </div>
                 <Carousel ariaLabel="스캔 페이지" contentClassName="page-strip">
-                  {Array.from({ length: pageCount }, (_, index) => (
+                  {pages.map((page, i) => (
                     <button
+                      key={page.id}
                       className={
-                        index === activePage
-                          ? "page-thumb active"
-                          : "page-thumb"
+                        active === i ? "page-thumb active" : "page-thumb"
                       }
-                      key={index}
-                      aria-label={`${index + 1}페이지`}
-                      aria-pressed={index === activePage}
-                      onClick={() => dispatch({ type: "select", page: index })}
+                      aria-label={`${i + 1}페이지`}
+                      aria-pressed={active === i}
+                      onClick={() => setActive(i)}
                     >
-                      <img src={CAMERA_ASSET} alt="" draggable="false" />
-                      <span>{index + 1}</span>
+                      <img src={page.image} alt="" />
+                      <span>{i + 1}</span>
                     </button>
                   ))}
-                  <button
-                    className="page-add-tile"
-                    disabled={pageCount >= MAX_PAGES}
-                    onClick={() => dispatch({ type: "camera" })}
-                  >
-                    <PlusIcon />
-                    <span>페이지</span>
-                  </button>
                 </Carousel>
+                <div className="page-tools">
+                  <button
+                    disabled={active === 0 || !!busy}
+                    onClick={() => {
+                      const next = [...pages];
+                      [next[active - 1], next[active]] = [
+                        next[active],
+                        next[active - 1],
+                      ];
+                      setPages(next);
+                      setActive(active - 1);
+                    }}
+                  >
+                    앞으로 이동
+                  </button>
+                  <button
+                    disabled={active >= pages.length - 1 || !!busy}
+                    onClick={() => {
+                      const next = [...pages];
+                      [next[active + 1], next[active]] = [
+                        next[active],
+                        next[active + 1],
+                      ];
+                      setPages(next);
+                      setActive(active + 1);
+                    }}
+                  >
+                    뒤로 이동
+                  </button>
+                </div>
               </section>
-
               <div className="review-actions">
                 <button
                   className="secondary-action"
-                  onClick={() => setSheet("ocr")}
+                  disabled={!!busy || !pages.length}
+                  onClick={() => void extractText()}
                 >
-                  <ReaderIcon /> OCR 데모
+                  <ReaderIcon /> 텍스트 추출
                 </button>
                 <button
                   className="primary-action"
-                  onClick={() => setSheet("export")}
+                  disabled={!!busy || !pages.length}
+                  onClick={() => openSheet("export")}
                 >
-                  <DownloadIcon /> PDF 안내
+                  <DownloadIcon /> PDF 저장
                 </button>
               </div>
-
-              {notice && (
-                <p className="operation-notice" role="status">
-                  {notice}
-                </p>
-              )}
+              <button
+                className="sheet-primary"
+                onClick={() => navigate("library")}
+              >
+                내 문서 보기
+              </button>
             </main>
           </MobileScroll>
         </div>
-
-        <BottomSheet
-          open={sheet === "ocr"}
-          onOpenChange={closeSheet}
-          title="OCR 데모"
-          description="아래는 고정 샘플입니다. 실제 문자 인식은 아직 연결되지 않았어요."
+      )}
+      {notice && (
+        <div
+          className={view === "camera" ? "camera-notice" : "global-notice"}
+          role="status"
         >
-          <div className="ocr-panel">
-            <div className="ocr-confidence">
-              <ReaderIcon /> 샘플 텍스트
-            </div>
-            <p>{OCR_TEXT}</p>
-            {notice && <p role="status">{notice}</p>}
-            <button className="sheet-primary" onClick={copySample}>
-              텍스트 복사
-            </button>
-          </div>
-        </BottomSheet>
-
-        <BottomSheet
-          open={sheet === "export"}
-          onOpenChange={closeSheet}
-          title="PDF 내보내기 안내"
-          description="이 버전은 화면 데모입니다. PDF 생성과 저장은 아직 연결되지 않았어요."
-        >
-          <div className="export-list">
-            <button disabled>
-              <span className="export-icon">
-                <FileTextIcon />
-              </span>
-              <span>
-                <strong>검색 가능한 PDF</strong>
-                <small>OCR 엔진과 PDF 생성 연동 예정</small>
-              </span>
-              <ChevronRightIcon />
-            </button>
-            <button disabled>
-              <span className="export-icon">
-                <ImageIcon />
-              </span>
-              <span>
-                <strong>이미지 PDF</strong>
-                <small>파일 내보내기 연동 예정</small>
-              </span>
-              <ChevronRightIcon />
-            </button>
-          </div>
-        </BottomSheet>
-      </>
-    );
-  }
-
-  return (
-    <>
-      <main className="app-screen camera-screen" aria-label="문서 스캔 카메라">
-        <img
-          className="camera-feed"
-          src={CAMERA_ASSET}
-          alt="책상 위 펼친 책 카메라 데모"
-          draggable="false"
-        />
-        <div className="camera-shade" />
-
-        <header className="camera-toolbar">
-          <button
-            className="icon-button"
-            aria-label="스캔 데모 초기화"
-            onClick={() => {
-              dispatch({ type: "reset" });
-              setFilter("자동");
-              setFlash(false);
-              setAutoCapture(false);
-              setMode("책");
-            }}
-          >
+          {notice}
+          <button aria-label="알림 닫기" onClick={() => setNotice("")}>
             <Cross2Icon />
           </button>
-          <div className="toolbar-actions">
-            <button
-              className={flash ? "icon-button active" : "icon-button"}
-              aria-label="플래시"
-              aria-pressed={flash}
-              onClick={() => setFlash((value) => !value)}
-            >
-              <LightningBoltIcon />
-            </button>
-            <button
-              className="icon-button"
-              aria-label="설정"
-              onClick={() => setSheet("settings")}
-            >
-              <GearIcon />
-            </button>
-          </div>
-        </header>
-
-        <section className="capture-message">
-          <h1>문서를 스캔하세요</h1>
-          <span className="demo-label">카메라 데모 · 샘플 이미지</span>
-          <p>
-            {mode === "책"
-              ? "두 페이지를 자동으로 나눠 보정해요"
-              : "자동으로 테두리를 인식하고 보정합니다"}
-          </p>
-        </section>
-
-        <div
-          className={`detection-frame mode-${mode}`}
-          aria-label="문서 영역 감지됨"
-        >
-          <span className="corner top-left" />
-          <span className="corner top-right" />
-          <span className="corner bottom-left" />
-          <span className="corner bottom-right" />
-          {mode === "책" && <span className="book-split" />}
-          <div className="detection-label">
-            <CheckCircledIcon /> {mode === "책" ? "책 감지됨" : "문서 감지됨"}
+        </div>
+      )}
+      {busy && (
+        <div className="processing-overlay app-busy" role="status">
+          <div className="processing-card">
+            <span className="spinner" />
+            <strong>{busy}</strong>
+            {progress > 0 && <small>{progress}%</small>}
+            <small>문서는 서버로 전송하지 않습니다</small>
           </div>
         </div>
-
-        <section className="capture-controls">
-          <div className="mode-switch" aria-label="스캔 모드">
-            {CAPTURE_MODES.map((item) => (
-              <button
-                key={item}
-                aria-pressed={mode === item}
-                disabled={screen === "processing"}
-                className={mode === item ? "selected" : ""}
-                onClick={() => setMode(item)}
-              >
-                {item}
-              </button>
-            ))}
-          </div>
-
-          <div className="shutter-row">
-            <button
-              className="side-control"
-              onClick={() => setSheet("gallery")}
-            >
-              <span>
-                <ImageIcon />
-              </span>
-              가져오기
-            </button>
-            <button
-              className="shutter"
-              aria-label="촬영"
-              disabled={screen === "processing" || pageCount >= MAX_PAGES}
-              onClick={startCapture}
-            >
-              <span />
-            </button>
-            <button
-              className="side-control"
-              aria-pressed={autoCapture}
-              onClick={() => setAutoCapture((value) => !value)}
-            >
-              <span>
-                <CameraIcon />
-              </span>
-              {autoCapture ? "자동 촬영 켜짐" : "자동 촬영"}
-            </button>
-          </div>
-        </section>
-
-        {screen === "processing" && (
-          <div className="processing-overlay" role="status">
-            <div className="processing-card">
-              <span className="spinner" />
-              <strong>샘플 미리보기를 준비해요</strong>
-              <small>자동 보정 흐름을 보여주는 데모입니다</small>
-            </div>
-          </div>
-        )}
-      </main>
-
+      )}
       <BottomSheet
         open={sheet === "settings"}
         onOpenChange={closeSheet}
-        title="프로토타입 안내"
-        description="Quiet Scan · 로컬 화면 데모"
+        title="Quiet Scan"
+        description="로컬 문서 스캐너"
       >
         <p>
-          실제 카메라, 문서 감지, 보정, OCR, PDF 생성은 연결 전입니다. 모든
-          사진과 텍스트는 샘플이며 서버로 전송하지 않습니다.
+          촬영, 보정, 한국어·영어 OCR과 PDF 생성을 이 브라우저에서 처리해요.
+          사진은 서버로 보내지 않습니다.
         </p>
         <p>
-          플래시와 자동 촬영은 설정 상태만 시뮬레이션합니다. 한 세션에서 최대{" "}
-          {MAX_PAGES}페이지를 미리볼 수 있어요.
+          책 모드는 좌우 페이지를 분할해요. 곡률 보정·손가락 제거·클라우드
+          동기화는 아직 지원하지 않아요.
         </p>
+        <button
+          className="sheet-primary"
+          onClick={() => {
+            setSheet(null);
+            stopCamera();
+          }}
+        >
+          카메라 끄기
+        </button>
       </BottomSheet>
       <BottomSheet
-        open={sheet === "gallery"}
+        open={sheet === "ocr"}
         onOpenChange={closeSheet}
-        title="샘플 사진 가져오기"
-        description="실제 기기 갤러리에 접근하지 않는 데모입니다."
+        title="추출된 텍스트"
+        description="OCR 결과는 오인식이 있을 수 있어요. 원문과 확인하세요."
       >
-        <div className="gallery-grid">
-          {[0, 1, 2].map((item) => (
-            <button
-              key={item}
-              onClick={() => {
+        <div className="ocr-panel">
+          <p className="ocr-result">
+            {text.trim() || "인식된 텍스트가 없어요."}
+          </p>
+          <button
+            className="sheet-primary"
+            onClick={() =>
+              void run("복사 중", async () => {
+                await navigator.clipboard.writeText(text);
                 setSheet(null);
-                startCapture();
-              }}
-            >
-              <img
-                src={CAMERA_ASSET}
-                alt={`${item + 1}번째 샘플 문서`}
-                draggable="false"
-              />
-              <span>
-                <CheckCircledIcon />
-              </span>
-            </button>
-          ))}
+                setNotice("텍스트를 복사했어요.");
+              })
+            }
+          >
+            텍스트 복사
+          </button>
+          <button
+            className="secondary-action full-width"
+            onClick={() => downloadText(text, title || "Quiet Scan")}
+          >
+            TXT 다운로드
+          </button>
         </div>
+      </BottomSheet>
+      <BottomSheet
+        open={sheet === "export"}
+        onOpenChange={closeSheet}
+        title="내보내기"
+        description="이미지 PDF 또는 OCR 텍스트가 포함된 PDF를 생성합니다."
+      >
+        <div className="page-tools">
+          <button
+            aria-pressed={quality === "high"}
+            onClick={() => setQuality("high")}
+          >
+            고화질
+          </button>
+          <button
+            aria-pressed={quality === "compact"}
+            onClick={() => setQuality("compact")}
+          >
+            용량 줄이기
+          </button>
+        </div>
+        <button
+          className="sheet-primary"
+          disabled={!!busy}
+          onClick={() => void exportPdf(false)}
+        >
+          이미지 PDF 다운로드
+        </button>
+        <button
+          className="sheet-primary"
+          disabled={!!busy}
+          onClick={() => void exportPdf(true)}
+        >
+          검색 가능한 PDF 다운로드
+        </button>
+        <button
+          className="secondary-action full-width"
+          disabled={!selected}
+          onClick={() =>
+            void run("이미지 생성 중", async () =>
+              downloadBlob(
+                await (await fetch(selected.image)).blob(),
+                (title || "스캔") + ".jpg",
+              ),
+            )
+          }
+        >
+          현재 페이지 JPG 다운로드
+        </button>
+      </BottomSheet>
+      <BottomSheet
+        open={sheet === "save"}
+        onOpenChange={closeSheet}
+        title="문서 저장"
+        description="이 브라우저의 저장소에 보관합니다. 중요한 문서는 PDF로도 백업하세요."
+      >
+        <label className="editor-label">
+          문서 제목
+          <KeyboardInput
+            aria-label="문서 제목"
+            maxLength={160}
+            value={title}
+            placeholder="제목 없는 문서"
+            onChange={(e) => setTitle(e.target.value)}
+          />
+        </label>
+        <label className="editor-label">
+          태그
+          <KeyboardInput
+            aria-label="태그"
+            value={tags}
+            maxLength={490}
+            placeholder="업무, 공부 (쉼표로 구분)"
+            onChange={(e) => setTags(e.target.value)}
+          />
+        </label>
+        <button
+          className="sheet-primary"
+          disabled={!!busy}
+          onClick={() => void save()}
+        >
+          기기에 저장
+        </button>
+      </BottomSheet>
+      <BottomSheet
+        open={sheet === "delete"}
+        onOpenChange={closeSheet}
+        title="문서를 삭제할까요?"
+        description="저장된 이미지와 OCR 텍스트를 이 브라우저에서 삭제합니다."
+      >
+        <button
+          className="sheet-primary danger-action"
+          onClick={() =>
+            void run("삭제 중", async () => {
+              if (deleteId) await deleteDocument(deleteId);
+              setDocuments(await listDocuments(query));
+              setDeleteId(null);
+              setSheet(null);
+            })
+          }
+        >
+          문서 삭제
+        </button>
+        <button
+          className="secondary-action full-width"
+          onClick={() => setSheet(null)}
+        >
+          취소
+        </button>
+      </BottomSheet>
+      <BottomSheet
+        open={sheet === "crop"}
+        onOpenChange={closeSheet}
+        title="문서 모서리 조정"
+        description="왼쪽 위부터 시계 방향으로 모서리를 조정하세요."
+      >
+        {selected && cropQuad && (
+          <>
+            <div className="crop-image">
+              <img
+                className="crop-preview"
+                src={selected.original}
+                alt="자르기 원본"
+              />
+              <svg
+                className="crop-outline"
+                viewBox={`0 0 ${cropSize.width} ${cropSize.height}`}
+                aria-hidden="true"
+              >
+                <polygon
+                  points={cropQuad.map((p) => `${p.x},${p.y}`).join(" ")}
+                  fill="#2581f61a"
+                  stroke="#2581f6"
+                  strokeWidth="3"
+                  vectorEffect="non-scaling-stroke"
+                />
+                {cropQuad.map((point, i) => (
+                  <circle
+                    key={i}
+                    cx={point.x}
+                    cy={point.y}
+                    r={Math.max(cropSize.width, cropSize.height) * 0.018}
+                    fill="#2581f6"
+                  />
+                ))}
+              </svg>
+            </div>
+            <div className="crop-controls">
+              {cropQuad.map((point, i) => (
+                <fieldset key={i}>
+                  <legend>
+                    {["왼쪽 위", "오른쪽 위", "오른쪽 아래", "왼쪽 아래"][i]}
+                  </legend>
+                  {(["x", "y"] as const).map((axis) => (
+                    <label key={axis}>
+                      {axis.toUpperCase()}
+                      <input
+                        type="range"
+                        data-scroll-drag="ignore"
+                        aria-label={`${i + 1}번 모서리 ${axis}`}
+                        min={0}
+                        max={
+                          axis === "x"
+                            ? cropSize.width - 1
+                            : cropSize.height - 1
+                        }
+                        value={point[axis]}
+                        onChange={(event) =>
+                          setCropQuad(
+                            cropQuad.map((p, j) =>
+                              j === i
+                                ? { ...p, [axis]: Number(event.target.value) }
+                                : p,
+                            ) as Quad,
+                          )
+                        }
+                      />
+                    </label>
+                  ))}
+                </fieldset>
+              ))}
+            </div>
+            <button
+              className="sheet-primary"
+              onClick={() =>
+                void run("원근 보정 중", async () => {
+                  const original = await processImage(
+                    selected.original,
+                    cropQuad,
+                    "original",
+                  );
+                  updatePage({
+                    ...selected,
+                    original,
+                    image: await processImage(
+                      original,
+                      undefined,
+                      selected.filter,
+                    ),
+                    ocr: undefined,
+                  });
+                  setSheet(null);
+                })
+              }
+            >
+              원근 보정 적용
+            </button>
+          </>
+        )}
       </BottomSheet>
     </>
   );
