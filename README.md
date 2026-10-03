@@ -33,6 +33,7 @@ npm run build
 npm run check:runtime
 npm run test:sites
 npm run test:runtime
+npm run test:production
 ```
 
 카메라는 HTTPS 또는 localhost가 필요합니다. 사진 가져오기는 카메라 없이도 사용할 수 있습니다. Playwright Chromium이 필요하며, 자동 테스트는 생성한 문서 이미지와 가상 카메라를 사용합니다. 실기기 권한·초점·플래시 품질은 별도 검수 대상입니다.

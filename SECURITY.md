@@ -16,7 +16,7 @@ The primary model reviewed the lower-tier agents' vision, PDF and storage implem
 
 ## Validation
 
-Final production build, 28-file protected-runtime integrity check and 4 Sites/worker packaging tests pass. Browser tests cover virtual camera lifecycle, real image processing and import rejection, page management, local save/reload/search/delete, actual Korean/English OCR, OCR initialization timeout/retry, compact PDF size reduction, and Korean searchable PDF extraction with PDF.js. See `VALIDATION.md` for the final count.
+Final production build, 28-file protected-runtime integrity check and 4 Sites/worker packaging tests pass. Browser tests cover virtual camera lifecycle, real image processing and import rejection, page management, local save/reload/search/delete, actual Korean/English OCR, OCR initialization timeout/retry, compact PDF size reduction, and Korean searchable PDF extraction with PDF.js. Four additional built-app browser tests verify the emitted worker paths and CSP outside the development server. See `VALIDATION.md` for the final count.
 
 `npm audit` reports zero known vulnerabilities across 157 dependency entries at review time. This is a registry advisory check, not a guarantee against unknown vulnerabilities or a model accuracy evaluation.
 

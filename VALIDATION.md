@@ -6,6 +6,7 @@ Final checks performed by the primary model after integrating lower-tier agent c
 - `npm run check:runtime`: all 28 protected files unchanged.
 - `npm run test:sites`: 4 packaging/Worker tests passed; no deployment performed.
 - `npm run test:runtime -- --workers=1`: 26 browser tests passed in 41.6 seconds.
+- `npm run test:production`: 4 built-app browser tests passed in 8.8 seconds, covering real import/edit, local save/reload/search/delete, multipage image PDF, and actual OCR/searchable PDF with no external network requests. These verify the emitted parent/child worker paths and CSP under the production build.
 - `npm audit`: zero known vulnerabilities, 157 dependency entries.
 - `git diff --check`: passed.
 
