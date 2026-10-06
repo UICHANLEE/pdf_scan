@@ -2,6 +2,8 @@ export type ScanPage = {
   id: string;
   image: string;
   original: string;
+  /** Single unfiltered baseline for undoing book cleanup; included in the byte cap. */
+  cleanupOriginal?: string;
   filter: "original" | "auto" | "document" | "bw" | "gray" | "photo";
   ocr?: {
     text: string;
@@ -215,6 +217,8 @@ function validateDocument(document: ScanDocument): void {
     }
     imageBytes +=
       base64ByteLength(page.image) + base64ByteLength(page.original);
+    if (page.cleanupOriginal !== undefined)
+      imageBytes += base64ByteLength(page.cleanupOriginal);
     if (imageBytes > MAX_IMAGE_BYTES) {
       throw storageError(
         "문서 이미지가 너무 큽니다. 한 문서의 이미지 용량은 100MB 이하여야 합니다.",

@@ -35,6 +35,7 @@ import {
 } from "./scanner/vision";
 import { recognizeText } from "./scanner/ocr";
 import { downloadBlob, downloadText } from "./scanner/download";
+import type { CurveOptions, MaskRegion } from "./scanner/book-enhancement";
 import {
   listDocuments,
   saveDocument,
@@ -54,8 +55,366 @@ const FILTERS: { id: ImageFilter; label: string }[] = [
   { id: "gray", label: "회색" },
   { id: "photo", label: "사진" },
 ];
-type Sheet = "ocr" | "export" | "settings" | "crop" | "save" | "delete" | null;
+type Sheet =
+  "ocr" | "export" | "settings" | "crop" | "save" | "delete" | "cleanup" | null;
 type View = "camera" | "review" | "library";
+type CleanupOptions = { curve: CurveOptions; regions: MaskRegion[] };
+type CleanupPreview = { original: string; image: string };
+type CleanupDraft = {
+  source: string;
+  image: string;
+  width: number;
+  height: number;
+  curve: CurveOptions | null;
+  regions: MaskRegion[];
+  warnings: string[];
+};
+
+function BookCleanupPanel({
+  draft,
+  busy,
+  onPreview,
+  onApply,
+}: {
+  draft: CleanupDraft;
+  busy: boolean;
+  onPreview: (
+    options: CleanupOptions,
+  ) => Promise<CleanupPreview | { error: string }>;
+  onApply: (preview: CleanupPreview) => void;
+}) {
+  const [curve, setCurve] = useState<CurveOptions>(
+    draft.curve ?? { amount: 0, edge: "left" },
+  );
+  const [regions, setRegions] = useState<MaskRegion[]>([]);
+  const [activeRegion, setActiveRegion] = useState<string | null>(null);
+  const [preview, setPreview] = useState<CleanupPreview | null>(null);
+  const [before, setBefore] = useState(true);
+  const [error, setError] = useState("");
+  const changeCurve = (next: CurveOptions) => {
+    setCurve(next);
+    setPreview(null);
+    setBefore(true);
+    setError("");
+  };
+  const changeRegions = (next: MaskRegion[]) => {
+    setRegions(next);
+    setPreview(null);
+    setBefore(true);
+    setError("");
+  };
+  const selectedRegion = regions.find((region) => region.id === activeRegion);
+  const anyChanges = curve.amount !== 0 || regions.length > 0;
+  return (
+    <div className="cleanup-panel">
+      <div className="cleanup-image">
+        <img
+          src={preview && !before ? preview.image : draft.image}
+          alt={preview && !before ? "책 보정 미리보기" : "책 보정 전 이미지"}
+          draggable="false"
+        />
+        {before && (
+          <svg
+            viewBox={`0 0 ${draft.width} ${draft.height}`}
+            aria-hidden="true"
+          >
+            {draft.regions
+              .filter(
+                (candidate) =>
+                  !regions.some((region) => region.id === candidate.id),
+              )
+              .map((candidate, index) => (
+                <g key={candidate.id}>
+                  <rect
+                    x={candidate.x * draft.width}
+                    y={candidate.y * draft.height}
+                    width={candidate.width * draft.width}
+                    height={candidate.height * draft.height}
+                    fill="none"
+                    stroke="#bc811b"
+                    strokeWidth="2"
+                    strokeDasharray="4 3"
+                    vectorEffect="non-scaling-stroke"
+                  />
+                  <text
+                    x={(candidate.x + 0.01) * draft.width}
+                    y={(candidate.y + 0.025) * draft.height}
+                    fill="#835700"
+                    fontSize={draft.width * 0.035}
+                  >
+                    {draft.regions.indexOf(candidate) + 1}
+                  </text>
+                </g>
+              ))}
+            {regions.map((region, index) => (
+              <g key={region.id}>
+                <rect
+                  x={region.x * draft.width}
+                  y={region.y * draft.height}
+                  width={region.width * draft.width}
+                  height={region.height * draft.height}
+                  fill="#e4645633"
+                  stroke="#d7493b"
+                  strokeWidth="2"
+                  vectorEffect="non-scaling-stroke"
+                />
+                <text
+                  x={(region.x + 0.015) * draft.width}
+                  y={(region.y + 0.025) * draft.height}
+                  fill="#b02722"
+                  fontSize={draft.width * 0.035}
+                >
+                  {index + 1}
+                </text>
+              </g>
+            ))}
+          </svg>
+        )}
+      </div>
+      {preview && (
+        <div className="page-tools" aria-label="보정 전후 비교">
+          <button aria-pressed={before} onClick={() => setBefore(true)}>
+            보정 전
+          </button>
+          <button aria-pressed={!before} onClick={() => setBefore(false)}>
+            보정 후
+          </button>
+        </div>
+      )}
+      <p className="cleanup-warning">
+        실험적 로컬 보정입니다. 가린 영역의 글자는 복원하지 않아요. 반드시
+        미리보기와 원문을 확인하세요.
+      </p>
+      {draft.warnings.length > 0 && (
+        <ul className="cleanup-hints">
+          {draft.warnings.map((warning, index) => (
+            <li key={index}>{warning}</li>
+          ))}
+        </ul>
+      )}
+      <section className="cleanup-section">
+        <h3>곡률 보정</h3>
+        <p className="privacy-note">
+          {draft.curve
+            ? "문자 줄의 휘어짐에서 조정값을 제안했어요."
+            : "휘어짐을 확실히 추정하지 못했어요. 수동으로 조정하세요."}
+        </p>
+        <label className="cleanup-slider">
+          휘어짐 강도 <output>{Math.round(curve.amount * 100)}</output>
+          <input
+            type="range"
+            data-scroll-drag="ignore"
+            aria-label="휘어짐 강도"
+            min={-100}
+            max={100}
+            step={1}
+            value={Math.round(curve.amount * 100)}
+            disabled={busy}
+            onChange={(event) =>
+              changeCurve({
+                ...curve,
+                amount: Number(event.target.value) / 100,
+              })
+            }
+          />
+        </label>
+        <div className="page-tools" aria-label="보정 방향">
+          {(
+            [
+              { edge: "left", label: "왼쪽 책등" },
+              { edge: "right", label: "오른쪽 책등" },
+              { edge: "both", label: "양쪽" },
+            ] as const
+          ).map((item) => (
+            <button
+              key={item.edge}
+              aria-pressed={curve.edge === item.edge}
+              disabled={busy}
+              onClick={() => changeCurve({ ...curve, edge: item.edge })}
+            >
+              {item.label}
+            </button>
+          ))}
+          <button
+            disabled={busy}
+            onClick={() => changeCurve({ amount: 0, edge: curve.edge })}
+          >
+            곡률 끄기
+          </button>
+        </div>
+      </section>
+      <section className="cleanup-section">
+        <h3>손가락 영역 가리기</h3>
+        <p className="privacy-note">
+          가장자리 피부색 후보를 제안합니다. 글자나 사진을 잘못 선택할 수
+          있어요. 후보는 선택 전까지 적용하지 않습니다.
+        </p>
+        {draft.regions.length === 0 ? (
+          <p className="privacy-note">
+            후보가 없어요. 필요하면 직접 영역을 추가하세요.
+          </p>
+        ) : (
+          <div className="cleanup-candidates">
+            {draft.regions.map((region, index) => {
+              const chosen = regions.some((item) => item.id === region.id);
+              return (
+                <button
+                  key={region.id}
+                  aria-pressed={chosen}
+                  disabled={busy || (!chosen && regions.length >= 6)}
+                  onClick={() => {
+                    changeRegions(
+                      chosen
+                        ? regions.filter((item) => item.id !== region.id)
+                        : [...regions, region],
+                    );
+                    setActiveRegion(chosen ? null : region.id);
+                  }}
+                >
+                  후보 {index + 1} {chosen ? "해제" : "선택"}
+                </button>
+              );
+            })}
+          </div>
+        )}
+        <button
+          className="secondary-action full-width"
+          disabled={busy || regions.length >= 6}
+          onClick={() => {
+            const region: MaskRegion = {
+              id: crypto.randomUUID(),
+              x: 0,
+              y: 0.35,
+              width: 0.12,
+              height: 0.18,
+            };
+            changeRegions([...regions, region]);
+            setActiveRegion(region.id);
+          }}
+        >
+          가릴 영역 추가
+        </button>
+        {regions.length > 0 && (
+          <div className="cleanup-candidates" aria-label="선택한 가림 영역">
+            {regions.map((region, index) => (
+              <button
+                key={region.id}
+                aria-pressed={activeRegion === region.id}
+                disabled={busy}
+                onClick={() => {
+                  setActiveRegion(region.id);
+                  setBefore(true);
+                }}
+              >
+                영역 {index + 1} 편집
+              </button>
+            ))}
+          </div>
+        )}
+        {selectedRegion && (
+          <fieldset className="cleanup-region-editor">
+            <legend>가림 영역 조정</legend>
+            {(
+              [
+                { key: "x", label: "가로 위치" },
+                { key: "y", label: "세로 위치" },
+                { key: "width", label: "영역 너비" },
+                { key: "height", label: "영역 높이" },
+              ] as const
+            ).map((item) => (
+              <label key={item.key} className="cleanup-slider">
+                {item.label}
+                <output>{Math.round(selectedRegion[item.key] * 100)}%</output>
+                <input
+                  type="range"
+                  data-scroll-drag="ignore"
+                  aria-label={item.label}
+                  min={item.key === "x" || item.key === "y" ? 0 : 2}
+                  max={
+                    item.key === "x"
+                      ? Math.floor((1 - selectedRegion.width) * 100)
+                      : item.key === "y"
+                        ? Math.floor((1 - selectedRegion.height) * 100)
+                        : item.key === "width"
+                          ? Math.floor((1 - selectedRegion.x) * 100)
+                          : Math.floor((1 - selectedRegion.y) * 100)
+                  }
+                  step={1}
+                  disabled={busy}
+                  value={Math.round(selectedRegion[item.key] * 100)}
+                  onChange={(event) =>
+                    changeRegions(
+                      regions.map((region) =>
+                        region.id === selectedRegion.id
+                          ? {
+                              ...region,
+                              [item.key]: Number(event.target.value) / 100,
+                            }
+                          : region,
+                      ),
+                    )
+                  }
+                />
+              </label>
+            ))}
+            <button
+              className="text-button cleanup-remove"
+              disabled={busy}
+              onClick={() => {
+                changeRegions(
+                  regions.filter((region) => region.id !== selectedRegion.id),
+                );
+                setActiveRegion(null);
+              }}
+            >
+              이 영역 제거
+            </button>
+          </fieldset>
+        )}
+      </section>
+      {error && (
+        <p className="cleanup-error" role="alert">
+          {error}
+        </p>
+      )}
+      <div className="cleanup-actions">
+        <button
+          className="secondary-action full-width"
+          disabled={busy || !anyChanges}
+          onClick={() =>
+            void onPreview({ curve, regions }).then((result) => {
+              if ("error" in result) {
+                setError(result.error);
+                setPreview(null);
+              } else {
+                setError("");
+                setPreview(result);
+                setBefore(false);
+              }
+            })
+          }
+        >
+          보정 미리보기
+        </button>
+        <button
+          className="sheet-primary"
+          disabled={busy || !preview}
+          onClick={() => preview && onApply(preview)}
+        >
+          이 결과 적용
+        </button>
+      </div>
+      <p className="privacy-note">
+        최대 6개 영역 · 영역당 15%, 합계 25% 이하만 가릴 수 있어요. 적용 전에는
+        페이지와 OCR을 변경하지 않습니다.
+      </p>
+      <p className="privacy-note">
+        되돌리기용 원본은 기기에 남습니다. 개인정보를 영구 삭제하는 보안 마스킹
+        용도로 사용하지 마세요.
+      </p>
+    </div>
+  );
+}
 async function preparePages(source: string, book: boolean) {
   const detected = await detectDocument(source);
   const corrected = await processImage(
@@ -98,6 +457,7 @@ export default function Prototype() {
   const [quad, setQuad] = useState<Quad | null>(null);
   const [cropQuad, setCropQuad] = useState<Quad | null>(null);
   const [cropSize, setCropSize] = useState({ width: 1, height: 1 });
+  const [cleanupDraft, setCleanupDraft] = useState<CleanupDraft | null>(null);
   const [documents, setDocuments] = useState<ScanDocument[]>([]);
   const [query, setQuery] = useState("");
   const [title, setTitle] = useState("");
@@ -117,6 +477,7 @@ export default function Prototype() {
   const navigate = (next: View) => {
     keyboard.hide();
     setSheet(null);
+    setCleanupDraft(null);
     setNotice("");
     setView(next);
   };
@@ -126,7 +487,10 @@ export default function Prototype() {
     setSheet(next);
   };
   const closeSheet = (open: boolean) => {
-    if (!open && !busyRef.current) setSheet(null);
+    if (!open && !busyRef.current) {
+      setSheet(null);
+      setCleanupDraft(null);
+    }
   };
   const stopCamera = () => {
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -405,6 +769,73 @@ export default function Prototype() {
         ],
       );
       openSheet("crop");
+    });
+  const openCleanup = () =>
+    selected &&
+    run("책 보정 분석 중", async () => {
+      const source = selected.cleanupOriginal ?? selected.original;
+      const { analyzeBookPage } = await import("./scanner/book-enhancement");
+      const [analysis, image, filtered] = await Promise.all([
+        analyzeBookPage(source),
+        loadImage(source),
+        processImage(source, undefined, selected.filter),
+      ]);
+      setCleanupDraft({
+        source,
+        image: filtered,
+        width: image.width,
+        height: image.height,
+        ...analysis,
+      });
+      openSheet("cleanup");
+    });
+  const previewCleanup = async (
+    options: CleanupOptions,
+  ): Promise<CleanupPreview | { error: string }> => {
+    let result: CleanupPreview | undefined;
+    let error = "보정할 페이지가 없어요.";
+    await run("책 보정 미리보기 생성 중", async () => {
+      if (!cleanupDraft || !selected) return;
+      try {
+        const { enhanceBookPage } = await import("./scanner/book-enhancement");
+        const original = await enhanceBookPage(cleanupDraft.source, options);
+        result = {
+          original,
+          image: await processImage(original, undefined, selected.filter),
+        };
+      } catch (cause) {
+        error = errorMessage(cause);
+        throw cause;
+      }
+    });
+    return result ?? { error };
+  };
+  const applyCleanup = (preview: CleanupPreview) => {
+    if (!selected || !cleanupDraft || busyRef.current) return;
+    updatePage({
+      ...selected,
+      ...preview,
+      cleanupOriginal: cleanupDraft.source,
+      ocr: undefined,
+    });
+    setSheet(null);
+    setCleanupDraft(null);
+    setNotice(
+      "책 보정을 적용했어요. OCR은 다시 실행하세요. ‘책 보정 되돌리기’로 원본을 복원할 수 있어요.",
+    );
+  };
+  const undoCleanup = () =>
+    selected?.cleanupOriginal &&
+    run("책 보정 되돌리는 중", async () => {
+      const original = selected.cleanupOriginal!;
+      updatePage({
+        ...selected,
+        original,
+        image: await processImage(original, undefined, selected.filter),
+        cleanupOriginal: undefined,
+        ocr: undefined,
+      });
+      setNotice("책 보정 전 이미지로 되돌렸어요. OCR은 다시 실행하세요.");
     });
   const text = pages
     .map((page, i) => `[페이지 ${i + 1}]\n${page.ocr?.text ?? ""}`)
@@ -712,6 +1143,7 @@ export default function Prototype() {
                               selected.filter,
                             ),
                             ocr: undefined,
+                            cleanupOriginal: undefined,
                           });
                         })
                       }
@@ -729,6 +1161,22 @@ export default function Prototype() {
                     >
                       <TrashIcon /> 삭제
                     </button>
+                  </div>
+                  <div className="page-tools cleanup-entry">
+                    <button
+                      disabled={!!busy}
+                      onClick={() => void openCleanup()}
+                    >
+                      <MagicWandIcon /> 책 보정
+                    </button>
+                    {selected.cleanupOriginal && (
+                      <button
+                        disabled={!!busy}
+                        onClick={() => void undoCleanup()}
+                      >
+                        책 보정 되돌리기
+                      </button>
+                    )}
                   </div>
                   <section className="filter-section">
                     <div className="section-heading">
@@ -874,8 +1322,9 @@ export default function Prototype() {
           사진은 서버로 보내지 않습니다.
         </p>
         <p>
-          책 모드는 좌우 페이지를 분할해요. 곡률 보정·손가락 제거·클라우드
-          동기화는 아직 지원하지 않아요.
+          책 모드는 중앙에서 좌우 페이지를 나눠요. ‘책 보정’에서 실험적 곡률
+          보정과 선택한 손가락 영역 가리기를 이용할 수 있어요. 가려진 글자는
+          복원하지 않습니다. 클라우드 전송은 하지 않아요.
         </p>
         <button
           className="sheet-primary"
@@ -1027,6 +1476,23 @@ export default function Prototype() {
         </button>
       </BottomSheet>
       <BottomSheet
+        open={sheet === "cleanup"}
+        onOpenChange={closeSheet}
+        title="로컬 책 보정"
+        description="곡률을 조정하고 선택한 영역만 종이색으로 가립니다. 분석은 제안이며 자동으로 적용하지 않습니다."
+        snap={0.84}
+      >
+        {sheet === "cleanup" && selected && cleanupDraft && (
+          <BookCleanupPanel
+            key={selected.id}
+            draft={cleanupDraft}
+            busy={!!busy}
+            onPreview={previewCleanup}
+            onApply={applyCleanup}
+          />
+        )}
+      </BottomSheet>
+      <BottomSheet
         open={sheet === "crop"}
         onOpenChange={closeSheet}
         title="문서 모서리 조정"
@@ -1116,6 +1582,7 @@ export default function Prototype() {
                       selected.filter,
                     ),
                     ocr: undefined,
+                    cleanupOriginal: undefined,
                   });
                   setSheet(null);
                 })

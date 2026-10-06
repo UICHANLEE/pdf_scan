@@ -6,7 +6,8 @@
 - Security/refactoring changes are reviewed by the primary model. Routine coding can use lower-tier agents when delegated by the primary agent.
 - This project implements a local browser scanner MVP, not a native production app. Camera capture, perspective correction, filters, Korean/English OCR, PDF generation and IndexedDB storage have engines; only claim behaviors verified by the current tests. Physical mobile camera quality, detection accuracy and OCR latency targets are not certified.
 - OCR assets are bundled under `public/ocr/`; Korean PDF font assets are under `public/fonts/`. Document content must never leave the browser. Do not add CDN/model downloads at runtime or a cloud backend without explicit authorization.
-- Book mode currently uses center splitting, not learned gutter detection or dewarping. Curvature/finger removal, cloud sync, encryption and AI/RAG are deferred RFP phases and must not be advertised as implemented.
+- The user selected local-only enhancement. Book mode still uses center splitting, not learned gutter detection. Experimental curve straightening uses a bounded 2D displacement with conservative text-row suggestions and manual controls. Skin-color edge candidates can be explicitly selected and filled with nearby paper color; this is masking, not recovery of occluded text or learned finger segmentation. Preview and undo are required; never apply a suggestion automatically.
+- Cloud sync, encrypted storage, AI/RAG and full 3D dewarping remain unimplemented. Do not upload document content or advertise those capabilities.
 - Keep scan state bounded, sample text explicit, and documents local by default.
 
 ## Prototype Instructions

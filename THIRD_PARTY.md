@@ -5,6 +5,7 @@ These assets are served from the application origin. Document images and text ar
 | Assets | Source | License |
 | --- | --- | --- |
 | `public/ocr/worker.min.js` | Installed `tesseract.js` 7.0.0 package | Apache-2.0; `public/ocr/LICENSE-tesseract-js.md` |
+| `public/ocr/tesseract.esm.min.js` | The same installed Tesseract.js 7.0.0 browser SDK, served locally to avoid dev-worker late optimization reloads | Apache-2.0; package license above; bundled notices in `tesseract.min.js.LICENSE.txt` and `worker.min.js.LICENSE.txt` |
 | `public/ocr/core/*` | Installed `tesseract.js-core` package | Apache-2.0; `public/ocr/LICENSE-core.txt` |
 | `public/ocr/lang/{kor,eng}.traineddata.gz` | [tesseract-ocr/tessdata_fast](https://github.com/tesseract-ocr/tessdata_fast), gzip-compressed original models | Apache-2.0; `public/ocr/LICENSE-tessdata.txt` |
 | `public/fonts/NotoSansKR.ttf` | [Google Fonts Noto Sans KR](https://github.com/google/fonts/tree/main/ofl/notosanskr), variable TTF | SIL Open Font License 1.1; `public/fonts/OFL.txt` |

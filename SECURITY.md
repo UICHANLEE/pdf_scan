@@ -1,6 +1,6 @@
-# Security review — 2026-10-04
+# Security review — 2026-10-06
 
-The primary model reviewed the lower-tier agents' vision, PDF and storage implementations and performed the integration/refactoring. This is a local browser MVP, not a penetration-test-certified or native production scanner.
+The primary model reviewed the lower-tier agents' vision, PDF, storage and book-enhancement implementations and performed the integration/refactoring. This is a local browser MVP, not a penetration-test-certified or native production scanner.
 
 ## Applied protections
 
@@ -13,12 +13,17 @@ The primary model reviewed the lower-tier agents' vision, PDF and storage implem
 - IndexedDB writes resolve only after transaction commit, failed opens can retry, and version changes release connections. A blocked open that later succeeds is closed. Document deletion removes image and OCR fields together.
 - Download names remove path/control characters, receive the actual MIME extension, and object URLs are revoked. Korean fonts are subset-embedded; rejected font loads can retry. PDF libraries load on demand.
 - `.gitignore` excludes credentials, local environment files, build outputs, test artifacts and QA captures. Existing exact PostCSS/nanoid overrides remain. Bundled asset licenses are preserved.
+- Book cleanup accepts bounded local JPEG/PNG data URLs only. Analysis is capped at an 800px raster and edits at 2200px; curve displacement is bounded to 6% of page height and monotonic in source y. Skin-color suggestions require explicit selection; no automatic deletion, cloud inference or new runtime model downloads were added.
+- Mask input requires finite in-bounds coordinates, unique IDs, no overlap, <=6 rectangles, <=15% area each and <=25% combined. Insufficient nearby bright-paper samples reject the edit instead of fabricating a background. A fresh preview is required after every parameter change. The primary model corrected per-row curve regression and added a straight-tilt comparison; signed synthetic bows and tilted straight rows are covered by tests.
+- A single validated `cleanupOriginal` backup is included in the existing 100MB document cap. Applying/undoing invalidates OCR; rotation/cropping discards a now-incompatible backup. The UI explicitly states that masking does not reconstruct text and is not secure personal-data redaction: feathered boundaries and retained originals prevent that claim.
+- The 2026-10-06 advisory check found [GHSA-68fv-2mgg-jv7q](https://github.com/advisories/GHSA-68fv-2mgg-jv7q) in transitive source-map-js 1.2.1. It was updated and pinned to 1.2.2 without install scripts; the subsequent advisory check reports zero known vulnerabilities.
+- Cold-cache testing reproduced a development-only session reset on first OCR initialization. The parent worker now imports the installed package's bundled browser SDK from `/ocr/tesseract.esm.min.js`, avoiding late dev-worker dependency optimization. The file is same-origin and ships with its license notices. Cold-cache OCR then passed without losing pages; no protected runtime/build configuration was modified.
 
 ## Validation
 
-Final production build, 28-file protected-runtime integrity check and 4 Sites/worker packaging tests pass. Browser tests cover virtual camera lifecycle, real image processing and import rejection, page management, local save/reload/search/delete, actual Korean/English OCR, OCR initialization timeout/retry, compact PDF size reduction, and Korean searchable PDF extraction with PDF.js. Four additional built-app browser tests verify the emitted worker paths and CSP outside the development server. See `VALIDATION.md` for the final count.
+Production build, 28-file protected-runtime integrity check and Sites/worker packaging tests are preserved. Browser tests cover virtual camera lifecycle, real image processing/import rejection, page management, local save/reload/search/delete, actual Korean/English OCR, OCR initialization timeout/retry, compact PDF size reduction, and Korean searchable PDF extraction with PDF.js. New engine/UI/storage tests cover signed synthetic curve flattening, flat/tilted-row rejection, edge color candidates versus central marks, approved region fill, invalid inputs, preview/undo/OCR invalidation, persistent baselines, and iPhone/Pixel dialog layout. Built-app browser tests exercise the cleanup flow as well as existing OCR/PDF paths. See `VALIDATION.md` for final run counts.
 
-`npm audit` reports zero known vulnerabilities across 157 dependency entries at review time. This is a registry advisory check, not a guarantee against unknown vulnerabilities or a model accuracy evaluation.
+`npm audit` reports zero known vulnerabilities after the source-map-js patch at this review date. This is a registry advisory check, not a guarantee against unknown vulnerabilities or a model accuracy evaluation.
 
 ## Remaining risks / production requirements
 
